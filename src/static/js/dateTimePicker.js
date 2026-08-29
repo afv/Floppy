@@ -1,6 +1,12 @@
 // Bind once: this script is re-evaluated on boosted (hx-boost) navigation.
 if (!window.__floppyDateTimePickerBound) {
   window.__floppyDateTimePickerBound = true;
+
+  // Declared inside the guard, not at file scope: a top-level const would
+  // throw "already been declared" the second time this file is evaluated.
+  // Years shown per page in the year grid, which is laid out four to a row,
+  // so this wants to stay a multiple of four.
+  const YEAR_PAGE_SIZE = 20;
   document.addEventListener("alpine:init", () => {
   Alpine.data("dateTimePicker", (config) => ({
     fieldName: config.fieldName,
@@ -375,6 +381,19 @@ if (!window.__floppyDateTimePickerBound) {
       this.yearInput = String(this.viewYear);
     },
 
+    // The year grid pages in YEAR_PAGE_SIZE blocks, so its chevrons have to
+    // step by a whole block. Stepping by one year there mostly appears to do
+    // nothing: the grid only shifts on the years that straddle a boundary.
+    gotoPrevYearPage() {
+      this.viewYear -= YEAR_PAGE_SIZE;
+      this.yearInput = String(this.viewYear);
+    },
+
+    gotoNextYearPage() {
+      this.viewYear += YEAR_PAGE_SIZE;
+      this.yearInput = String(this.viewYear);
+    },
+
     onYearInput(event) {
       const digits = event.target.value.replace(/\D/g, "").slice(0, 4);
       this.yearInput = digits;
@@ -400,8 +419,8 @@ if (!window.__floppyDateTimePickerBound) {
     },
 
     yearRange() {
-      const start = Math.floor(this.viewYear / 20) * 20;
-      return Array.from({ length: 20 }, (_, i) => start + i);
+      const start = Math.floor(this.viewYear / YEAR_PAGE_SIZE) * YEAR_PAGE_SIZE;
+      return Array.from({ length: YEAR_PAGE_SIZE }, (_, i) => start + i);
     },
 
     selectDay(cell) {
@@ -712,6 +731,34 @@ if (!window.__floppyDateTimePickerBound) {
       }
       this.open = false;
       this.$refs.trigger?.focus();
+    },
+
+    // Escape has to be consumed here or it also reaches the track modal
+    // enclosing the picker, which closes itself on a window-level escape of
+    // its own. Both listeners sit on window, so stopPropagation from an
+    // ordinary handler cannot win - the event reaches window once and every
+    // listener on it fires. This is bound in the capture phase instead, which
+    // runs before the target and before any bubble-phase window listener, so
+    // stopping there keeps the event from ever reaching the modal.
+    //
+    // With the picker closed it does nothing and escape falls through to the
+    // modal as before. Open, it steps back one view at a time, matching what
+    // the Back buttons in the month and year views do.
+    onEscape(event) {
+      if (!this.open) {
+        return;
+      }
+
+      if (this.pickerView === "years") {
+        this.showMonthsView();
+      } else if (this.pickerView === "months") {
+        this.showDaysView();
+      } else {
+        this.closePicker();
+      }
+
+      event.stopPropagation();
+      event.preventDefault();
     },
 
     togglePicker() {

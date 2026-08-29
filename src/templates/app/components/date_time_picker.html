@@ -13,7 +13,7 @@
      })"
      x-init="init"
      {% if suggestion_date_expr %}x-effect="suggestionDate = ({{ suggestion_date_expr }}) || ''"{% endif %}
-     @keydown.escape.window="open && closePicker()">
+     @keydown.escape.window.capture="onEscape($event)">
 
   <div class="flex-1 flex items-stretch border border-gray-600 rounded-md bg-[var(--color-surface-strong)] focus-within:ring-2 focus-within:ring-[var(--color-accent)]">
     {% if mobile_label %}
@@ -71,8 +71,12 @@
       </button>
     </div>
 
-    <div class="flex items-center justify-between mb-2">
-      <button type="button" @click="gotoPrevMonth()" aria-label="Previous month" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer" x-show="pickerView === 'days'">
+    {# The whole row belongs to the days view: the month and year views each #}
+    {# carry their own header. Hiding only the chevrons left the month label #}
+    {# stacked above that header and knocked it off centre, since its two #}
+    {# justify-between siblings were display:none. #}
+    <div class="flex items-center justify-between mb-2" x-show="pickerView === 'days'">
+      <button type="button" @click="gotoPrevMonth()" aria-label="Previous month" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer">
         {% include "app/icons/chevron-left.svg" with classes="w-4 h-4" %}
       </button>
       <button type="button"
@@ -80,7 +84,7 @@
               aria-label="Select month"
               class="text-sm font-semibold text-[var(--color-text)] hover:bg-[var(--color-surface-muted)] rounded-md px-2 py-1 cursor-pointer"
               x-text="monthLabel()"></button>
-      <button type="button" @click="gotoNextMonth()" aria-label="Next month" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer" x-show="pickerView === 'days'">
+      <button type="button" @click="gotoNextMonth()" aria-label="Next month" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer">
         {% include "app/icons/chevron-right.svg" with classes="w-4 h-4" %}
       </button>
     </div>
@@ -120,18 +124,21 @@
     <template x-if="pickerView === 'years'">
       <div>
         <div class="flex items-center justify-between mb-2">
-          <button type="button" @click="gotoPrevYear()" aria-label="Previous year" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer">
+          <button type="button" @click="gotoPrevYearPage()" aria-label="Previous years" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer">
             {% include "app/icons/chevron-left.svg" with classes="w-4 h-4" %}
           </button>
+          {# :value rather than x-model: x-model would also write yearInput on #}
+          {# input, racing the sanitising @input handler for the same property. #}
           <input type="text"
                  inputmode="numeric"
-                 x-model="yearInput"
+                 :value="yearInput"
                  @input="onYearInput($event)"
                  @keydown.enter.prevent="applyYearInput()"
-                 @keydown.escape.prevent="showDaysView()"
-                 class="date-picker-year-input w-20 text-center text-sm font-semibold text-[var(--color-text)] bg-[var(--color-surface-strong)] border border-gray-600 rounded-md px-2 py-1 outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+                 {# No escape handler here: the root consumes escape in the #}
+                 {# capture phase, so it never reaches this input. #}
+                 class="w-20 text-center text-sm font-semibold text-[var(--color-text)] bg-[var(--color-surface-strong)] border border-gray-600 rounded-md px-2 py-1 outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
                  aria-label="Year">
-          <button type="button" @click="gotoNextYear()" aria-label="Next year" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer">
+          <button type="button" @click="gotoNextYearPage()" aria-label="Next years" class="p-2 mx-1 rounded-md hover:bg-[var(--color-surface-muted)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] cursor-pointer">
             {% include "app/icons/chevron-right.svg" with classes="w-4 h-4" %}
           </button>
         </div>
