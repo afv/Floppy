@@ -13,7 +13,7 @@ import app
 from app import fork_services_play_dedupe as play_dedupe
 from app import helpers as app_helpers
 from app.models import MediaTypes, Sources, Status
-from app.providers import services, tvdb
+from app.providers import credentials, services, tvdb
 from app.services import grouped_anime, item_merge
 from integrations import import_progress
 from integrations.imports import helpers
@@ -54,9 +54,9 @@ def handle_oauth_callback(
             reverse("import_trakt_private"),
         )
     if not client_id:
-        client_id = settings.TRAKT_API
+        client_id = credentials.get("trakt", "client_id")
     if not client_secret:
-        client_secret = settings.TRAKT_API_SECRET
+        client_secret = credentials.get("trakt", "client_secret")
 
     params = {
         "client_id": client_id,
@@ -94,7 +94,7 @@ def get_username_from_oauth(access_token, client_id=None):
     url = "https://api.trakt.tv/users/me"
 
     if not client_id:
-        client_id = settings.TRAKT_API
+        client_id = credentials.get("trakt", "client_id")
 
     headers = {
         "Content-Type": "application/json",
@@ -140,7 +140,7 @@ def _refresh_redirect_uri():
 def request_device_code(client_id=None):
     """Start Trakt's device authorization flow and return the new codes."""
     if not client_id:
-        client_id = settings.TRAKT_API
+        client_id = credentials.get("trakt", "client_id")
 
     try:
         response = app.providers.services.api_request(
@@ -177,9 +177,9 @@ def poll_device_token(device_code, client_id=None, client_secret=None):
     caller is a single HTMX poll that must answer promptly.
     """
     if not client_id:
-        client_id = settings.TRAKT_API
+        client_id = credentials.get("trakt", "client_id")
     if not client_secret:
-        client_secret = settings.TRAKT_API_SECRET
+        client_secret = credentials.get("trakt", "client_secret")
 
     try:
         response = services.session.post(
@@ -237,8 +237,8 @@ def get_access_token(encrypted_refresh_token):
     decrypted_token = helpers.decrypt_or_raise(encrypted_refresh_token)
 
     params = {
-        "client_id": settings.TRAKT_API,
-        "client_secret": settings.TRAKT_API_SECRET,
+        "client_id": credentials.get("trakt", "client_id"),
+        "client_secret": credentials.get("trakt", "client_secret"),
         "refresh_token": decrypted_token,
         "grant_type": "refresh_token",
         "redirect_uri": _refresh_redirect_uri(),
@@ -686,7 +686,7 @@ class TraktImporter(TraktMetadataResolverMixin):
             "Content-Type": "application/json",
             "User-Agent": f"Floppy/{settings.VERSION}",
             "trakt-api-version": "2",
-            "trakt-api-key": settings.TRAKT_API,
+            "trakt-api-key": credentials.get("trakt", "client_id"),
         }
         if self.refresh_token:
             try:

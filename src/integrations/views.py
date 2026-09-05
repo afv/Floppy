@@ -39,6 +39,7 @@ import users
 from app import helpers as app_helpers
 from app import image_cache
 from app.log_safety import exception_summary
+from app.providers import credentials
 from integrations import (
     audiobookshelf_cover as abs_cover_proxy,
 )
@@ -595,7 +596,7 @@ def trakt_oauth(request):
     state_token = secrets.token_urlsafe(32)
     request.session[state_token] = state
     return redirect(
-        f"{url}?client_id={settings.TRAKT_API}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={credentials.get("trakt", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
 
 
@@ -1069,7 +1070,7 @@ def simkl_oauth(request):
     request.session[state_token] = state
 
     return redirect(
-        f"{url}?client_id={settings.SIMKL_ID}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={credentials.get("simkl", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
 
 
@@ -1160,7 +1161,7 @@ def anilist_oauth(request):
     request.session[state_token] = state
 
     return redirect(
-        f"{url}?client_id={settings.ANILIST_ID}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
+        f"{url}?client_id={credentials.get("anilist", "client_id")}&redirect_uri={redirect_uri}&response_type=code&state={state_token}",
     )
 
 
@@ -3477,8 +3478,7 @@ def import_hardcover(request):
         return _integration_redirect(request)
 
     if api_key:
-        request.user.hardcover_api_key = helpers.encrypt(api_key)
-        request.user.save(update_fields=["hardcover_api_key"])
+        credentials.set_user("hardcover", request.user, {"api_key": api_key})
         messages.success(request, "Hardcover API key saved.")
 
     if file:

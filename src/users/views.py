@@ -42,7 +42,7 @@ from app.models import (
     MusicReleasePreference,
     Status,
 )
-from app.providers import tmdb
+from app.providers import credentials, tmdb
 from app.services import metadata_resolution
 from app.templatetags import app_tags
 from integrations import exports, plex, stremio_catalog, tasks
@@ -1577,7 +1577,11 @@ def import_data(request):
         "koito_history_status_label": koito_history_status_label,
         "koito_history_can_start": koito_history_can_start,
         "koito_history_button_label": koito_history_button_label,
-        "trakt_configured": bool(settings.TRAKT_API and settings.TRAKT_API_SECRET),
+        "hardcover_personal_key": credentials.has_user_value("hardcover", user),
+        "trakt_configured": bool(
+            credentials.get("trakt", "client_id")
+            and credentials.get("trakt", "client_secret"),
+        ),
         "trakt_redirect_uri": trakt_redirect_uri,
         "trakt_redirect_capable": trakt_redirect_capable,
     }
