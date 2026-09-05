@@ -1589,15 +1589,22 @@ def media_details(
         and media_type == MediaTypes.ANIME.value
         and not media_metadata.get("episodes")
     ):
-        flat_anime_episode_preview = _build_flat_anime_episode_preview(
-            request,
-            detail_item=detail_item,
-            media_id=media_id,
-            base_metadata=media_metadata,
-            metadata_resolution_result=metadata_resolution_result,
-            retry_max_retries=detail_db_max_retries,
-            on_persistence_deferred=_mark_detail_persistence_deferred,
-        )
+        try:
+            flat_anime_episode_preview = _build_flat_anime_episode_preview(
+                request,
+                detail_item=detail_item,
+                media_id=media_id,
+                base_metadata=media_metadata,
+                metadata_resolution_result=metadata_resolution_result,
+                retry_max_retries=detail_db_max_retries,
+                on_persistence_deferred=_mark_detail_persistence_deferred,
+            )
+        except services.ProviderAPIError:
+            logger.warning(
+                "Skipping optional anime episode preview for media_id=%s due to provider API error",
+                media_id,
+            )
+            flat_anime_episode_preview = None
         if flat_anime_episode_preview:
             media_metadata["episodes"] = flat_anime_episode_preview
 

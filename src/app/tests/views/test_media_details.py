@@ -4255,6 +4255,26 @@ class MediaDetailsViewTests(TestCase):
             "Switch the metadata provider to TVDB or TMDB from Add to tracker",
         )
 
+        # Episode previews use another provider; its outage must not discard
+        # the anime's otherwise available details.
+        with patch(
+            "app.media_details_views._build_flat_anime_episode_preview",
+            side_effect=services.ProviderAPIError(
+                Sources.TMDB.value, requests.exceptions.Timeout()
+            ),
+        ):
+            response = self.client.get(
+                response.wsgi_request.path,
+                {"fragment": "secondary"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, ">Details</h2>")
+        self.assertContains(
+            response,
+            "Episode cards are not available from MyAnimeList metadata.",
+        )
+
     @override_settings(TVDB_API_KEY="test-tvdb-key")
     @patch("app.views.metadata_resolution.anime_mapping.find_entries_for_mal_id")
     @patch("app.views.anime_mapping.resolve_provider_series_id")
