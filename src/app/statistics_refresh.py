@@ -44,6 +44,7 @@ from app.statistics_cache import (
     _set_history_version,
     _store_dirty_days,
     cache_statistics_data,
+    is_statistics_cache_stale,
 )
 from app.statistics_day_builder import (
     _build_prefetch_for_range,
@@ -92,6 +93,8 @@ def _has_covering_range_cache(
         if not isinstance(cache_entry, dict):
             continue
         if cache_entry.get("history_version") != history_version:
+            continue
+        if is_statistics_cache_stale(cache_entry, user_id):
             continue
         if _range_cache_covers_days(candidate_range, start_day, end_day):
             return True
@@ -676,7 +679,7 @@ def schedule_statistics_refresh(
 
     history_version = _get_history_version(user_id)
     cache_entry = cache.get(_cache_key(user_id, range_name))
-    if cache_entry and cache_entry.get("history_version") == history_version:
+    if not is_statistics_cache_stale(cache_entry, user_id):
         return False
 
     lock_key = _refresh_lock_key(user_id, range_name)

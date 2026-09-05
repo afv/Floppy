@@ -1891,9 +1891,9 @@ def cache_status(request):
         refresh_scheduled = False
         if cache_entry:
             built_at = cache_entry.get("built_at")
-            history_version = cache_entry.get("history_version")
-            current_version = statistics_cache._get_history_version(request.user.id)
-            is_stale = False
+            is_stale = statistics_cache.is_statistics_cache_stale(
+                cache_entry, request.user.id
+            )
             recently_built = False
             age = None
             if built_at:
@@ -1901,10 +1901,6 @@ def cache_status(request):
                 # Consider cache "recently built" if it was built in the last 60 seconds
                 # This helps catch refreshes that completed just before or during page load
                 recently_built = age < timedelta(seconds=60)
-            if history_version:
-                is_stale = history_version != current_version
-            elif age:
-                is_stale = age > statistics_cache.STATISTICS_STALE_AFTER
 
             if not is_stale and refresh_lock:
                 cache.delete(refresh_lock_key)

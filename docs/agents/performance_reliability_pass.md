@@ -36,6 +36,26 @@ is intended to be reviewable and usable independently; nothing is merged or depl
   library entries before pagination. Optimizing that requires preserving
   smart filters, provider deduplication, and heterogeneous sorting.
 
+## Retain statistics between visits and refresh at midnight
+
+- Problem: page snapshots disappeared after six hours, and a matching activity
+  version could keep yesterday's "Today" result apparently fresh after midnight.
+- Cause: expiry controlled retention, while serving, scheduling, and polling
+  had separate freshness rules that ignored date rollover for versioned data.
+- Change: retain page snapshots for seven days and share a freshness check across
+  those paths. Refresh on a changed activity version or local calendar date.
+  Old unversioned entries keep their existing age-based fallback. Stale covering
+  ranges cannot publish a supposedly fresh derived result.
+- Alternatives: rebuilding unchanged versioned statistics every fifteen minutes
+  adds unnecessary worker load, so this retains the existing activity-driven
+  behavior. Longer retention applies only to page snapshots, not person caches.
+- Validation: tests cover a Tokyo midnight before UTC midnight, repeated requests
+  during a refresh, polling, unchanged same-day activity, retention, and stale
+  covering ranges. Final suite results recorded below.
+- Limits: longer retention may increase Redis memory use for infrequently visited
+  ranges. Redis eviction/flush and a never-built range remain genuine cold starts.
+  No new database persistence or background schedule is introduced.
+
 ## Review coverage and follow-ups
 
 The review follows Django request views, shared media helpers, Redis range/day
@@ -43,13 +63,27 @@ caches, database-backed Discover rows, Celery scheduling, and existing tests.
 The repository already contains substantial performance work; this pass builds
 on it rather than replacing the architecture.
 
-Open PRs were inspected through GitHub. On September 4 (US Central), the open
+Open PR titles and descriptions were inspected through GitHub. On September 4 (US Central), the open
 list contained #1080, #1041–#1035, #1031, #993, and #760; none was explicitly a
 performance PR. Performance changes #653 (first-run context queries), #920
 (compact media ordering), and #833 (bounded cache polling) are already merged.
-No PR was merged or modified by this pass. The open show-status, season, and
-TMDB-credit changes need their own correctness reviews before adoption; these
-patches do not imply approval of them.
+No PR was merged or modified by this pass. Two related reliability diffs were
+also reviewed (static review, without running those PR branches):
+
+- [#1031](https://github.com/dannyvfilms/Floppy/pull/1031): adopt the approach
+  after normal PR validation. Isolating independent save-response fragments
+  preserves successful UI updates when another fragment fails. It still catches
+  broad exceptions, so it improves failure isolation rather than eliminating
+  the masking of programming errors. It does not overlap these patches.
+- [#1035](https://github.com/dannyvfilms/Floppy/pull/1035): modify before adoption.
+  The defensive credit parsing is useful, but `raw_roles` accepts a dict and
+  otherwise assumes it can be iterated. A truthy numeric `roles` value still
+  raises `TypeError`; the corresponding crew/jobs path handles non-lists. Add
+  a regression and equivalent type normalization rather than treating the PR
+  as complete malformed-payload protection.
+
+The other open show-status/season/import changes were not reviewed line by line;
+these patches do not imply approval of them.
 
 High-value remaining leads, not established fixes:
 

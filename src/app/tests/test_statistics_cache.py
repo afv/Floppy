@@ -1,10 +1,12 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import call, patch
+from zoneinfo import ZoneInfo
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase, override_settings
+from django.urls import reverse
 from django.utils import timezone
 
 from app import statistics_cache
@@ -167,6 +169,89 @@ class StatisticsStaleResultTests(TestCase):
 
         self.assertEqual(result, updated)
         enqueue.assert_not_called()
+
+    @patch("app.tasks.refresh_statistics_cache_task.apply_async")
+    def test_previous_day_result_refreshes_even_without_new_activity(self, enqueue):
+        later = timezone.now() + timedelta(days=1)
+        with patch("app.statistics_cache.timezone.now", return_value=later):
+            result = statistics_cache.get_statistics_data(
+                self.user, None, None, "This Month"
+            )
+            # Repeat visits while the task waits must not multiply the work.
+            statistics_cache.get_statistics_data(self.user, None, None, "This Month")
+
+        self.assertEqual(result, self.data)
+        enqueue.assert_called_once()
+
+    @patch("app.tasks.refresh_statistics_cache_task.apply_async")
+    def test_local_midnight_refreshes_a_recent_today_snapshot(self, enqueue):
+        # UTC is still the same date, but Tokyo has crossed midnight.
+        before = datetime(2026, 6, 1, 14, 59, tzinfo=UTC)
+        after = before + timedelta(minutes=2)
+        with timezone.override(ZoneInfo("Asia/Tokyo")):
+            with patch("app.statistics_cache.timezone.now", return_value=before):
+                statistics_cache.cache_statistics_data(self.user.id, "Today", self.data)
+            with patch("app.statistics_cache.timezone.now", return_value=after):
+                result = statistics_cache.get_statistics_data(
+                    self.user, None, None, "Today"
+                )
+
+        self.assertEqual(result, self.data)
+        enqueue.assert_called_once()
+
+    @patch("app.tasks.refresh_statistics_cache_task.apply_async")
+    def test_polling_refreshes_previous_day_results_with_matching_history_version(
+        self, enqueue
+    ):
+        self.client.force_login(self.user)
+        later = timezone.now() + timedelta(days=1)
+        with patch("app.statistics_cache.timezone.now", return_value=later):
+            response = self.client.get(
+                reverse("cache_status"),
+                {"cache_type": "statistics", "range_name": "This Month"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["exists"])
+        self.assertTrue(response.json()["is_stale"])
+        self.assertTrue(response.json()["refresh_scheduled"])
+        enqueue.assert_called_once()
+
+    @patch("app.tasks.refresh_statistics_cache_task.apply_async")
+    def test_unchanged_same_day_snapshot_does_not_rebuild_every_fifteen_minutes(
+        self, enqueue
+    ):
+        before = datetime(2026, 6, 1, 12, tzinfo=UTC)
+        with timezone.override(ZoneInfo("UTC")):
+            with patch("app.statistics_cache.timezone.now", return_value=before):
+                statistics_cache.cache_statistics_data(self.user.id, "Today", self.data)
+            with patch(
+                "app.statistics_cache.timezone.now",
+                return_value=before + timedelta(hours=2),
+            ):
+                result = statistics_cache.get_statistics_data(
+                    self.user, None, None, "Today"
+                )
+        self.assertEqual(result, self.data)
+        enqueue.assert_not_called()
+
+    def test_page_snapshot_survives_between_daily_visits(self):
+        ttl = cache.ttl(statistics_cache._cache_key(self.user.id, "This Month"))
+        self.assertGreater(ttl, 24 * 60 * 60)
+
+    def test_stale_covering_range_cannot_publish_a_fresh_derived_snapshot(self):
+        statistics_cache.cache_statistics_data(self.user.id, "All Time", self.data)
+        start, end = statistics_cache._get_predefined_range_dates("This Month")
+        later = timezone.now() + timedelta(days=1)
+        with patch("app.statistics_cache.timezone.now", return_value=later):
+            covers = statistics_cache._has_covering_range_cache(
+                self.user.id,
+                "This Month",
+                start,
+                end,
+                statistics_cache.get_history_version(self.user.id),
+            )
+        self.assertFalse(covers)
 
 
 class StatisticsHourBucketTests(TestCase):
