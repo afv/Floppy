@@ -1,14 +1,21 @@
-from datetime import datetime, timedelta
+from collections import defaultdict
+from datetime import date, datetime, timedelta
 from unittest.mock import call, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from app import statistics_cache
 from app.models import Item, MediaTypes, Movie, Sources, Status
+from app.statistics_aggregator import (
+    _build_combined_hours_charts,
+    _build_platform_breakdown,
+    _build_weekday_hour_charts,
+)
+from app.statistics_day_cache import _normalize_day_value
 
 
 class StatisticsRefreshSchedulingTests(TestCase):
@@ -881,3 +888,88 @@ class RequestPathDayBuildTests(TestCase):
 
         self.assertEqual(result, {"movie": 60 * 31})
         self.assertEqual(mock_build_day.call_count, 31)
+
+
+class DayCacheContractTests(SimpleTestCase):
+    def test_cache_key_preserves_supported_day_formats(self):
+        for day in (date(2026, 9, 5), "2026-09-05", "20260905"):
+            with self.subTest(day=day):
+                self.assertEqual(
+                    statistics_cache._day_cache_key(42, day),
+                    "stats:day:v7:42:2026-09-05",
+                )
+        self.assertEqual(statistics_cache._day_cache_key(42, "invalid"), "")
+
+    def test_aware_datetime_uses_local_day(self):
+        with timezone.override("America/Chicago"):
+            self.assertEqual(
+                _normalize_day_value(
+                    datetime.fromisoformat("2026-09-05T01:00:00+00:00")
+                ),
+                date(2026, 9, 4),
+            )
+
+    def test_history_version_round_trips_through_cache_facade(self):
+        cache.clear()
+        self.addCleanup(cache.clear)
+        initial = statistics_cache.get_history_version(42)
+        self.assertEqual(statistics_cache.get_history_version(42), initial)
+        statistics_cache._set_history_version(42, "changed")
+        self.assertEqual(statistics_cache.get_history_version(42), "changed")
+
+
+class PlatformBreakdownTests(SimpleTestCase):
+    def test_collection_choice_wins_and_repeated_games_count_once(self):
+        result = _build_platform_breakdown(
+            [
+                {"item_id": 1, "hours": 2},
+                {"item_id": 1, "hours": 3},
+                {"item_id": 2, "hours": 1},
+            ],
+            {1: "Steam Deck"},
+            {1: {"platforms": ["PC"]}, 2: {"platforms": ["  Switch  "]}},
+        )
+        self.assertEqual(
+            [(entry["name"], entry["games"], entry["hours"]) for entry in result],
+            [("Steam Deck", 1, 5), ("Switch", 1, 1)],
+        )
+
+    def test_ambiguous_or_missing_platforms_are_omitted(self):
+        self.assertEqual(
+            _build_platform_breakdown(
+                [{"item_id": item_id, "hours": 1} for item_id in (1, 2, 3, None)],
+                {},
+                {1: {"platforms": ["PC", "Switch"]}, 2: {"platforms": "PC"}},
+            ),
+            [],
+        )
+
+
+class StatisticsChartPreparationTests(SimpleTestCase):
+    def test_heatmap_combines_types_and_preserves_empty_cells(self):
+        counts = {
+            "movie": defaultdict(lambda: defaultdict(int)),
+            "tv": defaultdict(lambda: defaultdict(int)),
+        }
+        counts["movie"][2][13] = 2
+        counts["tv"][2][13] = 3
+        result = _build_weekday_hour_charts(counts)
+        self.assertEqual(result["all"][2][13], 5)
+        self.assertEqual(result["movie"][2][13], 2)
+        self.assertEqual(result["all"][0][0], 0)
+        self.assertEqual(len(result["all"]), 7)
+        self.assertTrue(all(len(row) == 24 for row in result["all"]))
+
+    def test_hour_charts_combine_elapsed_time_without_reading_units(self):
+        result = _build_combined_hours_charts(
+            {
+                "movie": {"2026-09-05": 90},
+                "tv": {"2026-09-05": 30},
+                "book": {"2026-09-05": 600},
+            },
+            {"movie": {"13": 90}, "tv": {"13": 30}, "book": {"13": 600}},
+        )
+        self.assertEqual(result["by_month"]["all"]["datasets"][0]["data"][8], 2)
+        self.assertEqual(result["by_time_of_day"]["all"]["datasets"][0]["data"][13], 2)
+        self.assertEqual(result["by_month"]["movie"]["datasets"][0]["data"][8], 1.5)
+        self.assertNotIn("book", result["by_month"])

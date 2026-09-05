@@ -22,7 +22,6 @@ from app.statistics_aggregator import _aggregate_statistics_from_days
 from app.statistics_cache import (
     PREDEFINED_RANGES,
     STATISTICS_ALL_TIME_REFRESH_DELAY,
-    STATISTICS_DAY_CACHE_TIMEOUT,
     STATISTICS_REFRESH_LOCK_PREFIX,
     STATISTICS_SCHEDULE_DEDUPE_TTL,
     STATISTICS_TASK_PRIORITY_BACKGROUND,
@@ -33,7 +32,6 @@ from app.statistics_cache import (
     _collect_stale_reading_score_days,
     _dirty_days_key,
     _get_empty_statistics_data,
-    _get_history_version,
     _load_dirty_days,
     _lock_is_stale,
     _maybe_clear_metadata_refresh,
@@ -41,16 +39,20 @@ from app.statistics_cache import (
     _preferred_range_for_user,
     _refresh_lock_key,
     _schedule_dedupe_key,
-    _set_history_version,
     _store_dirty_days,
     cache_statistics_data,
 )
 from app.statistics_day_builder import (
     _build_prefetch_for_range,
-    _day_cache_key,
     _iter_day_range,
-    _normalize_day_value,
     build_stats_for_day,
+)
+from app.statistics_day_cache import (
+    STATISTICS_DAY_CACHE_TIMEOUT,
+    _day_cache_key,
+    _get_history_version,
+    _normalize_day_value,
+    _set_history_version,
 )
 from app.statistics_highlights import _normalize_history_highlight_images
 
