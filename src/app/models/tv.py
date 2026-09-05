@@ -944,9 +944,23 @@ class Season(Media):
             self.rewatch_started_at = original_started_at
             self._invalidate_episode_stats()
 
-    def derived_status_from_episode_progress(self, max_progress=None):
-        """Return the effective season status from local episode history."""
-        if self.status in {Status.DROPPED.value, Status.PAUSED.value}:
+    def derived_status_from_episode_progress(
+        self,
+        max_progress=None,
+        *,
+        resume_paused=False,
+    ):
+        """Return the effective season status from local episode history.
+
+        Paused is sticky by default so a season the user parked keeps reading
+        as paused everywhere it is displayed. `resume_paused` lifts that for
+        the one write that disproves it: logging a new episode is the user
+        coming back, so the season resumes. Dropped is never lifted -- that is
+        the only status where the user said they are not returning.
+        """
+        if self.status == Status.DROPPED.value:
+            return self.status
+        if self.status == Status.PAUSED.value and not resume_paused:
             return self.status
 
         completed_episode_count = self.completed_episode_count
@@ -1862,6 +1876,7 @@ class Episode(models.Model):
 
         desired_status = self.related_season.derived_status_from_episode_progress(
             max_progress=max_progress,
+            resume_paused=True,
         )
 
         if desired_status != self.related_season.status:
