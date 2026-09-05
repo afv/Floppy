@@ -63,6 +63,11 @@ from integrations.imports.audiobookshelf import (
     AudiobookshelfAuthError,
     AudiobookshelfClient,
 )
+from integrations.imports.koreader import (
+    KoreaderAuthError,
+    KoreaderClient,
+    KoreaderClientError,
+)
 from integrations.imports.radarr import RadarrClient
 from integrations.imports.sonarr import SonarrClient
 from integrations.imports.storyteller import (
@@ -89,6 +94,8 @@ from integrations.models import (
     GPodderAccount,
     JellyfinAccount,
     KoitoAccount,
+    KoreaderAccount,
+    KoreaderDocumentLink,
     LastFMAccount,
     MDBListAccount,
     PlexAccount,
@@ -2381,6 +2388,226 @@ def import_storyteller(request):
     tasks.import_storyteller.delay(user_id=request.user.id, mode="new")
     _ensure_storyteller_schedule(request.user)
     messages.info(request, "Storyteller import queued.")
+    return redirect("import_data")
+
+
+KOREADER_IMPORT_TASK_NAME = "Import from KOReader"
+KOREADER_MAX_COMPLETION = 100
+
+
+def _parse_finished_threshold_percent(post):
+    """Return a 0-1 completion threshold from a percentage form field."""
+    raw = (post.get("finished_threshold_percent") or "").strip()
+    if not raw:
+        return 1.0
+    try:
+        percent = float(raw)
+    except ValueError as exc:
+        msg = "Completion threshold must be a number between 1 and 100."
+        raise ValueError(msg) from exc
+    if not 1 <= percent <= KOREADER_MAX_COMPLETION:
+        msg = "Completion threshold must be between 1 and 100 percent."
+        raise ValueError(msg)
+    return percent / 100.0
+
+
+def _koreader_options_from_post(post):
+    """Read KOReader account toggles from a form POST."""
+    return {
+        "verify_ssl": post.get("verify_ssl") == "on",
+        "create_missing": post.get("create_missing") == "on",
+        "skip_finished_books": post.get("skip_finished_books") == "on",
+        "finished_threshold": _parse_finished_threshold_percent(post),
+    }
+
+
+def _validate_koreader_connection(server_url, username, auth_key, verify_ssl):
+    """Verify credentials against the sync server or raise."""
+    client = KoreaderClient(server_url, username, auth_key, verify_ssl=verify_ssl)
+    client.auth()
+
+
+@require_POST
+def koreader_connect(request):
+    """Connect a KOReader sync server account."""
+    server_url = request.POST.get("server_url", "").strip().rstrip("/")
+    username = request.POST.get("username", "").strip()
+    password = request.POST.get("password", "")
+    try:
+        options = _koreader_options_from_post(request.POST)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+    mode = request.POST.get("mode", "new")
+    frequency = request.POST.get("frequency", "once")
+    import_time = request.POST.get("time", "00:00")
+
+    if not server_url or not username or not password:
+        messages.error(request, "Server URL, username, and password are required.")
+        return redirect("import_data")
+
+    auth_key = KoreaderClient.password_to_auth_key(password)
+    try:
+        _validate_koreader_connection(
+            server_url,
+            username,
+            auth_key,
+            options["verify_ssl"],
+        )
+    except KoreaderAuthError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+    except KoreaderClientError as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+    except requests.RequestException as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+
+    KoreaderAccount.objects.update_or_create(
+        user=request.user,
+        defaults={
+            "server_url": server_url,
+            "username": username,
+            "auth_key": helpers.encrypt(auth_key),
+            **options,
+            "connection_broken": False,
+            "last_error_message": "",
+        },
+    )
+
+    if frequency == "once":
+        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
+        messages.success(request, "Connected to KOReader. Import queued.")
+    else:
+        helpers.create_import_schedule(
+            username=username,
+            request=request,
+            mode=mode,
+            frequency=frequency,
+            import_time=import_time,
+            source="KOReader",
+            extra_kwargs={"user_id": request.user.id},
+        )
+        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
+        messages.success(request, "Connected to KOReader. Import scheduled.")
+    return redirect("import_data")
+
+
+@require_POST
+def koreader_settings(request):
+    """Update KOReader connection and sync options."""
+    account = getattr(request.user, "koreader_account", None)
+    if not account:
+        messages.error(request, "Connect KOReader before changing settings.")
+        return redirect("import_data")
+
+    server_url = request.POST.get("server_url", "").strip().rstrip("/")
+    username = request.POST.get("username", "").strip()
+    password = request.POST.get("password", "")
+    try:
+        options = _koreader_options_from_post(request.POST)
+    except ValueError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+
+    if not server_url or not username:
+        messages.error(request, "Server URL and username are required.")
+        return redirect("import_data")
+
+    if password:
+        auth_key = KoreaderClient.password_to_auth_key(password)
+    else:
+        try:
+            auth_key = helpers.decrypt_or_raise(account.auth_key)
+        except helpers.MediaImportError as exc:
+            messages.error(request, str(exc))
+            return redirect("import_data")
+
+    try:
+        _validate_koreader_connection(
+            server_url,
+            username,
+            auth_key,
+            options["verify_ssl"],
+        )
+    except KoreaderAuthError as exc:
+        messages.error(request, str(exc))
+        return redirect("import_data")
+    except KoreaderClientError as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+    except requests.RequestException as exc:
+        messages.error(request, f"Could not reach KOReader sync server: {exc}")
+        return redirect("import_data")
+
+    account.server_url = server_url
+    account.username = username
+    account.auth_key = helpers.encrypt(auth_key)
+    account.verify_ssl = options["verify_ssl"]
+    account.create_missing = options["create_missing"]
+    account.skip_finished_books = options["skip_finished_books"]
+    account.finished_threshold = options["finished_threshold"]
+    account.connection_broken = False
+    account.last_error_message = ""
+    account.save(
+        update_fields=[
+            "server_url",
+            "username",
+            "auth_key",
+            "verify_ssl",
+            "create_missing",
+            "skip_finished_books",
+            "finished_threshold",
+            "connection_broken",
+            "last_error_message",
+            "updated_at",
+        ],
+    )
+    messages.success(request, "KOReader settings saved.")
+    return redirect("import_data")
+
+
+@require_POST
+def koreader_disconnect(request):
+    """Disconnect the KOReader integration."""
+    from django_celery_beat.models import PeriodicTask
+
+    PeriodicTask.objects.filter(
+        task=KOREADER_IMPORT_TASK_NAME,
+        kwargs__contains=f'"user_id": {request.user.id}',
+    ).delete()
+    KoreaderDocumentLink.objects.filter(user=request.user).delete()
+    KoreaderAccount.objects.filter(user=request.user).delete()
+    messages.info(request, "Disconnected KOReader.")
+    return redirect("import_data")
+
+
+@require_POST
+def import_koreader(request):
+    """Queue a KOReader import or update its schedule."""
+    account = getattr(request.user, "koreader_account", None)
+    if not account:
+        messages.error(request, "Connect KOReader before importing.")
+        return redirect("import_data")
+
+    mode = request.POST["mode"]
+    frequency = request.POST["frequency"]
+    import_time = request.POST["time"]
+
+    if frequency == "once":
+        tasks.import_koreader.delay(user_id=request.user.id, mode=mode)
+        messages.info(request, "KOReader import queued.")
+    else:
+        helpers.create_import_schedule(
+            username=account.username,
+            request=request,
+            mode=mode,
+            frequency=frequency,
+            import_time=import_time,
+            source="KOReader",
+            extra_kwargs={"user_id": request.user.id},
+        )
     return redirect("import_data")
 
 

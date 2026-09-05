@@ -125,6 +125,22 @@ urlpatterns = [
         name="storyteller_disconnect",
     ),
     path("import/storyteller", views.import_storyteller, name="import_storyteller"),
+    path(
+        "import/koreader/connect",
+        views.koreader_connect,
+        name="koreader_connect",
+    ),
+    path(
+        "import/koreader/disconnect",
+        views.koreader_disconnect,
+        name="koreader_disconnect",
+    ),
+    path(
+        "import/koreader/settings",
+        views.koreader_settings,
+        name="koreader_settings",
+    ),
+    path("import/koreader", views.import_koreader, name="import_koreader"),
     path("import/stremio/connect", views.stremio_connect, name="stremio_connect"),
     path(
         "import/stremio/disconnect", views.stremio_disconnect, name="stremio_disconnect"
