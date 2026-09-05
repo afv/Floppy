@@ -19,6 +19,23 @@ is intended to be reviewable and usable independently; nothing is merged or depl
 - Limit: the previous result may briefly lag edits; it is marked stale. This
   does not create results on first use or preserve Redis data after a flush.
 
+## Load more home cards without rebuilding other shelves
+
+- Problem: asking for another page of one shelf rebuilt unrelated home rows.
+- Cause: the request built all groups before selecting the requested row.
+- Change: pass the existing single-row filter for HTMX append requests.
+  Initial page and ordinary navigation retain their existing behavior.
+- Evidence: the regression fails on baseline because another shelf is touched;
+  with the fix it returns the requested cards without touching that shelf.
+  This removes work proportional to unrelated shelves; no wall-clock speedup
+  is claimed without profiling a populated installation.
+- Validation: all 28 home-view tests and scoped Ruff passed.
+- Alternative: another cache is unnecessary; the builder already supports
+  selecting a row before it performs expensive work.
+- Follow-up: a cold individual shelf still materializes and sorts matching
+  library entries before pagination. Optimizing that requires preserving
+  smart filters, provider deduplication, and heterogeneous sorting.
+
 ## Review coverage and follow-ups
 
 The review follows Django request views, shared media helpers, Redis range/day

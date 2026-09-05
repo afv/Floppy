@@ -425,8 +425,7 @@ def home(request):
             load_row_offset = 0
 
         # First paint renders only the first group; the rest hydrates via
-        # home_rest_fragment. Row-append (load_row) requests need the full
-        # row set, so they skip the deferral.
+        # home_rest_fragment. Row-append requests build only their target shelf.
         defer_remaining_groups = load_row_id is None
         home_groups = build_home_page_groups(
             request.user,
@@ -434,6 +433,7 @@ def home(request):
             load_row_id=load_row_id,
             load_row_offset=load_row_offset,
             append_only=bool(request.headers.get("HX-Request") and load_row_id),
+            only_row_id=load_row_id if request.headers.get("HX-Request") else None,
             first_group_only=defer_remaining_groups,
         )
 
