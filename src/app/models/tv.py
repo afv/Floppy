@@ -363,9 +363,10 @@ class TV(Media):
         )
         has_caught_up_season = False
         planning_continuation = None
+        paused_continuation = None
 
         for season in seasons:
-            if season.status in {Status.DROPPED.value, Status.PAUSED.value}:
+            if season.status == Status.DROPPED.value:
                 continue
 
             next_episode_number = season.next_episode_number()
@@ -373,6 +374,16 @@ class TV(Media):
                 has_caught_up_season = (
                     season.status == Status.COMPLETED.value or season.progress > 0
                 )
+                continue
+
+            # A paused season is still where the user left the show, so it can be
+            # watched next -- but only once no unpaused season qualifies, because
+            # pausing one season and moving on to a later one is also normal. It
+            # never hands off to a following planning season: the user stopped here.
+            if season.status == Status.PAUSED.value:
+                if season.progress > 0 and paused_continuation is None:
+                    paused_continuation = season, next_episode_number
+                has_caught_up_season = False
                 continue
 
             if season.progress > 0 or season.status == Status.IN_PROGRESS.value:
@@ -387,7 +398,7 @@ class TV(Media):
 
             has_caught_up_season = False
 
-        return planning_continuation
+        return planning_continuation or paused_continuation
 
     def increase_progress(self, watch_operation_id=None):
         """Increase TV progress by advancing the active season."""

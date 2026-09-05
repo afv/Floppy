@@ -386,6 +386,42 @@ class ProgressEditTV(TestCase):
             ).exists(),
         )
 
+    def test_progress_increase_advances_a_paused_season(self):
+        """Quick update advances a paused season and leaves it paused (#634)."""
+        from app.templatetags import app_tags
+        from events.models import Event
+
+        for episode_number in (1, 2):
+            Event.objects.create(
+                item=self.item_season,
+                content_number=episode_number,
+                datetime=datetime.datetime.now(datetime.UTC),
+            )
+        Season.objects.filter(pk=self.season.pk).update(status=Status.PAUSED.value)
+
+        next_ep_url = app_tags.next_episode_url(self.item_tv, self.tv)
+        self.assertIn("/season/1/episode/2", next_ep_url)
+
+        self.client.post(
+            reverse(
+                "progress_edit",
+                kwargs={
+                    "media_type": MediaTypes.TV.value,
+                    "instance_id": self.tv.id,
+                },
+            ),
+            {"operation": "increase"},
+        )
+
+        self.assertTrue(
+            Episode.objects.filter(
+                related_season=self.season,
+                item__episode_number=2,
+            ).exists(),
+        )
+        self.season.refresh_from_db()
+        self.assertEqual(self.season.status, Status.PAUSED.value)
+
     def test_progress_decrease(self):
         """Test the decrease of progress for a TV show."""
         self.client.post(
