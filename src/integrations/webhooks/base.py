@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from django.utils import timezone
 
 import app
+from app import fork_services_play_dedupe as play_dedupe
 from app.log_safety import exception_summary
 from app.models import MediaTypes, ProviderMetadataStatus, Sources, Status
 from app.providers import tvmaze
@@ -1190,20 +1191,38 @@ class BaseWebhookProcessor:
                     current_instance.item,
                 )
         else:
-            app.models.Movie.objects.create(
-                item=movie_item,
-                user=user,
-                progress=progress,
-                status=Status.COMPLETED.value
-                if movie_played
-                else Status.IN_PROGRESS.value,
-                start_date=now if not movie_played else None,
-                end_date=now if movie_played else None,
-            )
-            logger.info(
-                "Created new movie instance with status: %s",
-                Status.COMPLETED.value if movie_played else Status.IN_PROGRESS.value,
-            )
+            # A second row here is a rewatch, but the same play may already have
+            # been recorded by a repeated webhook or by a Trakt/Plex history
+            # import, so measure it against the plays already stored (#642).
+            duplicate = movie_played and play_dedupe.existing_movie_play_times(
+                user,
+                media_ids=[movie_item.media_id],
+                source=movie_item.source,
+            ).is_duplicate(movie_item.media_id, now)
+
+            if duplicate:
+                logger.debug(
+                    "Skipping duplicate movie record near %s: %s",
+                    now,
+                    movie_item,
+                )
+            else:
+                app.models.Movie.objects.create(
+                    item=movie_item,
+                    user=user,
+                    progress=progress,
+                    status=Status.COMPLETED.value
+                    if movie_played
+                    else Status.IN_PROGRESS.value,
+                    start_date=now if not movie_played else None,
+                    end_date=now if movie_played else None,
+                )
+                logger.info(
+                    "Created new movie instance with status: %s",
+                    Status.COMPLETED.value
+                    if movie_played
+                    else Status.IN_PROGRESS.value,
+                )
 
         # Queue collection metadata update if supported
         self._queue_collection_metadata_update(payload, user, movie_item)
@@ -1876,31 +1895,28 @@ class BaseWebhookProcessor:
                 second=0,
                 microsecond=0,
             )
-            latest_episode = (
-                app.models.Episode.objects.filter(
-                    item=episode_item,
-                    related_season=season_instance,
-                )
-                .order_by("-end_date")
-                .first()
+            # Check for duplicate episode records: webhooks are sometimes
+            # triggered multiple times (#689), and the same play may already
+            # have been recorded by a Trakt or Plex history import (#642).
+            play_key = (
+                episode_item.media_id,
+                episode_item.season_number,
+                episode_item.episode_number,
             )
-
-            should_create = True
-            # check for duplicate episode records,
-            # sometimes webhooks are triggered multiple times #689
-            if latest_episode and latest_episode.end_date:
-                time_diff = abs((now - latest_episode.end_date).total_seconds())
-                threshold = 5
-                if time_diff < threshold:
-                    should_create = False
-                    logger.debug(
-                        "Skipping duplicate episode record "
-                        "(time difference: %d seconds): %s S%02dE%02d",
-                        time_diff,
-                        tv_metadata["title"],
-                        season_number,
-                        episode_number,
-                    )
+            existing_plays = play_dedupe.existing_episode_play_times(
+                user,
+                media_ids=[episode_item.media_id],
+                source=episode_item.source,
+            )
+            should_create = not existing_plays.is_duplicate(play_key, now)
+            if not should_create:
+                logger.debug(
+                    "Skipping duplicate episode record near %s: %s S%02dE%02d",
+                    now,
+                    tv_metadata["title"],
+                    season_number,
+                    episode_number,
+                )
 
             if should_create:
                 app.models.Episode.objects.create(
