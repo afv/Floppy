@@ -28,9 +28,10 @@ from django.http import (
     JsonResponse,
     StreamingHttpResponse,
 )
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
@@ -114,6 +115,7 @@ SONARR_RECURRING_TASK_NAME = "Import from Sonarr (Recurring)"
 GPODDER_RECURRING_TASK_NAME = "Import from GPodder (Recurring)"
 # The upload rides in the Celery message, so bound what a single import can send.
 TRAKT_EXPORT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+TRAKT_DEVICE_SESSION_KEY = "trakt_device_auth"
 YAMTRACK_IMPORT_MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
@@ -577,6 +579,11 @@ def trakt_oauth(request):
         request,
         reverse("import_trakt_private"),
     )
+    if not app_helpers.supports_oauth_redirect(redirect_uri):
+        # Trakt refuses non-HTTPS callbacks, so this instance can only connect
+        # through the device code flow (#681).
+        return _start_trakt_device_flow(request)
+
     url = "https://trakt.tv/oauth/authorize"
     state = {
         "mode": request.POST["mode"],
@@ -592,6 +599,125 @@ def trakt_oauth(request):
     )
 
 
+def _finish_trakt_connection(request, oauth_result, state_data):
+    """Encrypt the refresh token, then queue or schedule the Trakt import."""
+    enc_token = helpers.encrypt(oauth_result["refresh_token"])
+
+    frequency = state_data["frequency"]
+    mode = state_data["mode"]
+    import_time = state_data["time"]
+
+    if frequency == "once":
+        tasks.import_trakt.delay(
+            token=enc_token,
+            user_id=request.user.id,
+            mode=mode,
+            username=oauth_result["username"],
+        )
+        messages.info(request, "The task to import media from Trakt has been queued.")
+    else:
+        helpers.create_import_schedule(
+            oauth_result["username"],
+            request,
+            mode,
+            frequency,
+            import_time,
+            "Trakt",
+            token=enc_token,
+        )
+
+
+def _start_trakt_device_flow(request):
+    """Mint a Trakt device code and send the user to the code screen."""
+    try:
+        device = trakt.request_device_code()
+    except helpers.MediaImportError as error:
+        messages.error(request, str(error))
+        return _integration_redirect(request)
+
+    request.session[TRAKT_DEVICE_SESSION_KEY] = {
+        "device_code": device["device_code"],
+        "user_code": device["user_code"],
+        "verification_url": device["verification_url"],
+        "interval": device["interval"],
+        "expires_at": (
+            timezone.now() + timedelta(seconds=int(device["expires_in"]))
+        ).isoformat(),
+        "mode": request.POST["mode"],
+        "frequency": request.POST["frequency"],
+        "time": request.POST["time"],
+        "return_to": request.POST.get("next"),
+    }
+    return redirect("trakt_device_verify")
+
+
+def _trakt_device_state(request):
+    """Return the pending device authorization, or None if gone or expired."""
+    state = request.session.get(TRAKT_DEVICE_SESSION_KEY)
+    if not isinstance(state, dict):
+        return None
+    expires_at = parse_datetime(state.get("expires_at") or "")
+    if expires_at is None or timezone.now() >= expires_at:
+        return None
+    return state
+
+
+@require_GET
+def trakt_device_verify(request):
+    """Show the Trakt device code the user must enter at trakt.tv/activate."""
+    state = _trakt_device_state(request)
+    if state is None:
+        request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+        messages.error(request, "The Trakt authorization code expired. Start again.")
+        return _integration_redirect(request)
+
+    return render(
+        request,
+        "integrations/trakt_device_code.html",
+        {
+            "user_code": state["user_code"],
+            "verification_url": state["verification_url"],
+            "interval": state["interval"],
+            "poll_url": reverse("trakt_device_poll"),
+            "cancel_url": reverse("import_data"),
+        },
+    )
+
+
+def _htmx_redirect(location):
+    """Tell HTMX to navigate away without swapping anything in."""
+    return HttpResponse(status=HTTPStatus.NO_CONTENT, headers={"HX-Redirect": location})
+
+
+@require_GET
+def trakt_device_poll(request):
+    """Poll Trakt once for the pending device authorization."""
+    state = _trakt_device_state(request)
+    if state is None:
+        request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+        messages.error(request, "The Trakt authorization code expired. Start again.")
+        return _htmx_redirect(reverse("import_data"))
+
+    try:
+        result = trakt.poll_device_token(state["device_code"])
+    except helpers.MediaImportError as error:
+        request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+        messages.error(request, str(error))
+        return _htmx_redirect(reverse("import_data"))
+
+    if result is None:
+        return HttpResponse(status=HTTPStatus.NO_CONTENT)
+
+    request.session.pop(TRAKT_DEVICE_SESSION_KEY, None)
+    _finish_trakt_connection(request, result, state)
+    redirect_response = _integration_redirect(
+        request,
+        connected_slug="trakt",
+        next_url=state.get("return_to"),
+    )
+    return _htmx_redirect(redirect_response["Location"])
+
+
 @require_GET
 def import_trakt_private(request):
     """View for handling Trakt OAuth2 callback and scheduling private import."""
@@ -601,32 +727,12 @@ def import_trakt_private(request):
 
     redirect_uri = state_data.get("redirect_uri")
     oauth_callback = trakt.handle_oauth_callback(request, redirect_uri=redirect_uri)
-    enc_token = helpers.encrypt(oauth_callback["refresh_token"])
-
-    frequency = state_data["frequency"]
-    mode = state_data["mode"]
-    import_time = state_data["time"]
-    return_to = state_data.get("return_to")
-
-    if frequency == "once":
-        tasks.import_trakt.delay(
-            token=enc_token,
-            user_id=request.user.id,
-            mode=mode,
-            username=oauth_callback["username"],
-        )
-        messages.info(request, "The task to import media from Trakt has been queued.")
-    else:
-        helpers.create_import_schedule(
-            oauth_callback["username"],
-            request,
-            mode,
-            frequency,
-            import_time,
-            "Trakt",
-            token=enc_token,
-        )
-    return _integration_redirect(request, connected_slug="trakt", next_url=return_to)
+    _finish_trakt_connection(request, oauth_callback, state_data)
+    return _integration_redirect(
+        request,
+        connected_slug="trakt",
+        next_url=state_data.get("return_to"),
+    )
 
 
 @require_POST

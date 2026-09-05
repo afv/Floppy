@@ -1872,7 +1872,7 @@
 
           {% else %}
             <p class="text-sm text-[var(--color-text-muted)] mb-3">
-              Connect a self-hosted Koito server to import your full listening history and sync new listens every 15 minutes. Generate an API key in Koito under Settings &rarr; API Keys. Floppy only reads from Koito and never sends listens back.
+              Connect a self-hosted Koito server to import your full listening history and sync new listens every 15 minutes. Generate an API key in Koito under Settings → API Keys. Floppy only reads from Koito and never sends listens back.
             </p>
             <form method="post" action="{% url 'koito_connect' %}">
               {% csrf_token %}
@@ -1956,12 +1956,21 @@
                      target="_blank"
                      class="text-[var(--color-link)] underline hover:text-indigo-200">Trakt API Apps</a>.
                 </li>
-                <li>Set the Redirect URI to <code class="text-indigo-200 break-all">{{ request.scheme }}://{{ request.get_host }}{% url 'import_trakt_private' %}</code>.</li>
+                <li>Set the Redirect URI to <code class="text-indigo-200 break-all">{{ trakt_redirect_uri }}</code>.</li>
                 <li>Set <code class="text-indigo-200">TRAKT_API</code> and <code class="text-indigo-200">TRAKT_API_SECRET</code> in your environment.</li>
               </ol>
-              <p class="text-[var(--color-text-muted)]">
-                Behind reverse proxies, also set <code class="text-indigo-200">URLS=https://your_domain.com</code> so Floppy builds the correct callback URL.
-              </p>
+              {% if trakt_redirect_capable %}
+                <p class="text-[var(--color-text-muted)]">
+                  Behind reverse proxies, also set <code class="text-indigo-200">URLS=https://your_domain.com</code> so Floppy builds the correct callback URL.
+                </p>
+              {% else %}
+                <p class="text-[var(--color-text-muted)]">
+                  This instance is not served over HTTPS, and Trakt only accepts HTTPS redirects, so
+                  Floppy will show you a code to enter at <code class="text-indigo-200">trakt.tv/activate</code>
+                  instead. Set <code class="text-indigo-200">URLS=https://your_domain.com</code> if you would
+                  rather use the one-click browser flow.
+                </p>
+              {% endif %}
             </div>
 
             <form class="flex items-center"

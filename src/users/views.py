@@ -27,6 +27,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django_celery_beat.models import PeriodicTask
 
+from app import helpers as app_helpers
 from app import history_cache, image_cache, statistics_cache
 from app.discover.feeds import get_external_row_definitions
 from app.discover.registry import DISCOVER_MEDIA_TYPES
@@ -45,6 +46,7 @@ from app.providers import tmdb
 from app.services import metadata_resolution
 from app.templatetags import app_tags
 from integrations import exports, plex, stremio_catalog, tasks
+from integrations.imports import trakt as trakt_imports
 from integrations.models import (
     ImportRun,
     LastFMAccount,
@@ -1537,6 +1539,16 @@ def import_data(request):
         if lastfm_account.history_import_status in {"completed", "failed"}:
             lastfm_history_button_label = "Reimport full history"
 
+    # Trakt refuses non-HTTPS redirect URIs, so the setup instructions differ
+    # depending on whether this instance can use the browser flow at all (#681).
+    trakt_redirect_uri = app_helpers.build_absolute_app_url(
+        request,
+        reverse("import_trakt_private"),
+    )
+    trakt_redirect_capable = app_helpers.supports_oauth_redirect(trakt_redirect_uri)
+    if not trakt_redirect_capable:
+        trakt_redirect_uri = trakt_imports.TRAKT_OOB_REDIRECT_URI
+
     context = {
         "user": user,
         "plex_account": plex_account,
@@ -1566,6 +1578,8 @@ def import_data(request):
         "koito_history_can_start": koito_history_can_start,
         "koito_history_button_label": koito_history_button_label,
         "trakt_configured": bool(settings.TRAKT_API and settings.TRAKT_API_SECRET),
+        "trakt_redirect_uri": trakt_redirect_uri,
+        "trakt_redirect_capable": trakt_redirect_capable,
     }
     return render(request, "users/import_data.html", context)
 

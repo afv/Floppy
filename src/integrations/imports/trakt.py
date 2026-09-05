@@ -22,6 +22,12 @@ from integrations.imports.helpers import MediaImportError, MediaImportUnexpected
 logger = logging.getLogger(__name__)
 
 TRAKT_API_BASE_URL = "https://api.trakt.tv"
+# Device-flow apps have no callback URL; Trakt still requires the field on
+# the token grants, and expects this well-known out-of-band value.
+TRAKT_OOB_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
+# Trakt returns 5; clamp anything unexpected before it drives a poll loop.
+TRAKT_DEVICE_MIN_INTERVAL = 5
+TRAKT_DEVICE_MAX_INTERVAL = 60
 BULK_PAGE_SIZE = 1000
 TRAKT_UNKNOWN_DATE = "1970-01-01T00:00:00.000Z"
 
@@ -121,6 +127,116 @@ def get_username_from_oauth(access_token, client_id=None):
     return request["username"]
 
 
+def _refresh_redirect_uri():
+    """Return the redirect URI to send with a refresh grant.
+
+    Falls back to the out-of-band value when this instance has no callback URL
+    Trakt would accept - either because nothing is configured (no request in a
+    Celery worker) or because it is plain HTTP on a non-loopback host, which is
+    also how the connection was made in the first place.
+    """
+    redirect_uri = app_helpers.build_absolute_app_url(
+        None,
+        reverse("import_trakt_private"),
+    )
+    if not app_helpers.supports_oauth_redirect(redirect_uri):
+        return TRAKT_OOB_REDIRECT_URI
+    return redirect_uri
+
+
+def request_device_code(client_id=None):
+    """Start Trakt's device authorization flow and return the new codes."""
+    if not client_id:
+        client_id = settings.TRAKT_API
+
+    try:
+        response = app.providers.services.api_request(
+            "TRAKT",
+            "POST",
+            f"{TRAKT_API_BASE_URL}/oauth/device/code",
+            params={"client_id": client_id},
+        )
+    except (services.ProviderAPIError, requests.RequestException) as error:
+        logger.warning("Trakt device code request failed: %s", error)
+        msg = (
+            "Could not start Trakt authorization. "
+            "Check TRAKT_API and TRAKT_API_SECRET."
+        )
+        raise MediaImportError(msg) from error
+
+    interval = response.get("interval") or TRAKT_DEVICE_MIN_INTERVAL
+    response["interval"] = min(
+        max(int(interval), TRAKT_DEVICE_MIN_INTERVAL),
+        TRAKT_DEVICE_MAX_INTERVAL,
+    )
+    return response
+
+
+def poll_device_token(device_code, client_id=None, client_secret=None):
+    """Poll Trakt once for a device authorization result.
+
+    Returns the same shape as `handle_oauth_callback` on success, or None while
+    the user has not finished authorizing yet. Terminal outcomes raise.
+
+    This deliberately bypasses `services.api_request`: that helper raises on
+    every non-2xx and sleeps in-thread on 429/5xx, but here the status code is
+    the protocol - 400 means "keep waiting" and 418 means "denied" - and the
+    caller is a single HTMX poll that must answer promptly.
+    """
+    if not client_id:
+        client_id = settings.TRAKT_API
+    if not client_secret:
+        client_secret = settings.TRAKT_API_SECRET
+
+    try:
+        response = services.session.post(
+            f"{TRAKT_API_BASE_URL}/oauth/device/token",
+            json={
+                "code": device_code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+            },
+            timeout=settings.REQUEST_TIMEOUT,
+        )
+    except requests.RequestException as error:
+        logger.warning("Trakt device token poll failed: %s", error)
+        msg = "Could not reach Trakt. Try again."
+        raise MediaImportError(msg) from error
+
+    status_code = response.status_code
+
+    if status_code == requests.codes.ok:
+        payload = response.json()
+        access_token = payload["access_token"]
+        return {
+            "access_token": access_token,
+            "refresh_token": payload["refresh_token"],
+            "username": get_username_from_oauth(access_token, client_id=client_id),
+        }
+
+    # Pending, or polling faster than Trakt likes. The caller already waits the
+    # interval Trakt handed out, so both simply mean "not yet".
+    if status_code == requests.codes.bad_request:
+        return None
+    if status_code == requests.codes.too_many_requests:
+        logger.warning("Trakt asked us to slow down device token polling")
+        return None
+
+    terminal_errors = {
+        requests.codes.not_found: (
+            "This Trakt authorization request is no longer valid. Start again."
+        ),
+        requests.codes.conflict: "This Trakt authorization code was already used.",
+        requests.codes.gone: "The Trakt authorization code expired. Start again.",
+        requests.codes.im_a_teapot: "Trakt authorization was denied.",
+    }
+    msg = terminal_errors.get(status_code)
+    if msg is None:
+        logger.warning("Trakt device token poll returned status %s", status_code)
+        msg = "Trakt authorization failed."
+    raise MediaImportError(msg)
+
+
 def get_access_token(encrypted_refresh_token):
     """Get access token from encrypted refresh token."""
     url = "https://api.trakt.tv/oauth/token"
@@ -132,10 +248,7 @@ def get_access_token(encrypted_refresh_token):
         "client_secret": settings.TRAKT_API_SECRET,
         "refresh_token": decrypted_token,
         "grant_type": "refresh_token",
-        "redirect_uri": app_helpers.build_absolute_app_url(
-            None,
-            reverse("import_trakt_private"),
-        ),
+        "redirect_uri": _refresh_redirect_uri(),
     }
 
     try:

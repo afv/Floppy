@@ -9,6 +9,16 @@ urlpatterns = [
         views.import_trakt_private,
         name="import_trakt_private",
     ),
+    path(
+        "import/trakt/device",
+        views.trakt_device_verify,
+        name="trakt_device_verify",
+    ),
+    path(
+        "import/trakt/device/poll",
+        views.trakt_device_poll,
+        name="trakt_device_poll",
+    ),
     path("import/trakt/public", views.import_trakt_public, name="import_trakt_public"),
     path(
         "import/trakt/export",
