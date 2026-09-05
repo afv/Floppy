@@ -4,7 +4,7 @@ from unittest.mock import call, patch
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from app import statistics_cache
@@ -103,6 +103,70 @@ class StatisticsRefreshSchedulingTests(TestCase):
             allow_inline=False,
             priority=settings.CELERY_TASK_PRIORITY_FOLLOWUP,
         )
+
+
+@override_settings(CELERY_TASK_ALWAYS_EAGER=False, TESTING=False)
+class StatisticsStaleResultTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.user = get_user_model().objects.create_user(username="stats-stale-user")
+        self.data = statistics_cache._get_empty_statistics_data()
+        self.data["hours_per_media_type"]["movie"] = "2h"
+        statistics_cache.cache_statistics_data(self.user.id, "This Month", self.data)
+
+    def tearDown(self):
+        cache.clear()
+
+    @patch("app.tasks.refresh_statistics_cache_task.apply_async")
+    def test_invalidation_serves_previous_result_and_schedules_refresh(self, enqueue):
+        for range_name in ("This Month", None):
+            with self.subTest(range_name=range_name):
+                cache.delete(
+                    statistics_cache._refresh_lock_key(self.user.id, "This Month")
+                )
+                enqueue.reset_mock()
+                statistics_cache.invalidate_statistics_cache(self.user.id, range_name)
+
+                result = statistics_cache.get_statistics_data(
+                    self.user, None, None, "This Month"
+                )
+
+                self.assertEqual(result, self.data)
+                enqueue.assert_called_once()
+
+    @patch("app.statistics_cache.refresh_statistics_cache")
+    @patch(
+        "app.tasks.refresh_statistics_cache_task.apply_async",
+        side_effect=OSError("offline"),
+    )
+    def test_unavailable_worker_keeps_previous_result_without_inline_rebuild(
+        self, enqueue, rebuild
+    ):
+        statistics_cache.invalidate_statistics_cache(self.user.id)
+
+        result = statistics_cache.get_statistics_data(
+            self.user, None, None, "This Month"
+        )
+
+        self.assertEqual(result, self.data)
+        enqueue.assert_called_once()
+        rebuild.assert_not_called()
+        self.assertIsNone(
+            cache.get(statistics_cache._refresh_lock_key(self.user.id, "This Month"))
+        )
+
+    def test_completed_refresh_replaces_previous_result(self):
+        statistics_cache.invalidate_statistics_cache(self.user.id)
+        updated = statistics_cache._get_empty_statistics_data()
+        statistics_cache.cache_statistics_data(self.user.id, "This Month", updated)
+
+        with patch("app.tasks.refresh_statistics_cache_task.apply_async") as enqueue:
+            result = statistics_cache.get_statistics_data(
+                self.user, None, None, "This Month"
+            )
+
+        self.assertEqual(result, updated)
+        enqueue.assert_not_called()
 
 
 class StatisticsHourBucketTests(TestCase):
