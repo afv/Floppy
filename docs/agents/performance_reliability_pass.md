@@ -74,6 +74,21 @@ is intended to be reviewable and usable independently; nothing is merged or depl
 - Limit: this gracefully handles a provider failure after it occurs; it does
   not shorten the provider timeout or eliminate every detail-page network call.
 
+## Refresh retained comparison and talent data
+
+- Problem: lightweight comparison, count, and talent readers could keep serving
+  a retained stale snapshot without requesting its replacement.
+- Cause: these readers bypass the full-page reader to avoid unnecessary work;
+  deleting snapshots previously concealed the missing refresh checks.
+- Change: apply the shared freshness check and enqueue a background refresh
+  before returning the existing lightweight result.
+- Validation: one regression exercises all three readers after invalidation,
+  and the statistics view/cache/API tests cover the affected call sites.
+- Alternative: routing these calls through the full page builder would add
+  unrelated computation and artwork normalization to small card requests.
+- Limit: the current request can still return the last snapshot while the
+  queued replacement is pending, consistent with the main statistics page.
+
 ## Review coverage and follow-ups
 
 The review follows Django request views, shared media helpers, Redis range/day
@@ -113,3 +128,21 @@ High-value remaining leads, not established fixes:
   durable row caches but Redis tab snapshots. Cold starts and queue backlogs
   need realistic large-library/worker measurements before promising that every
   loading banner can disappear.
+
+## Completed validation
+
+- `SECRET=test-only scripts/test.sh`: 5,101 tests, 25 skipped, zero failures
+  (612.713 seconds of test execution). This covered the first four changes.
+- After the comparison/talent-reader follow-up:
+  `SECRET=test-only scripts/test.sh app.tests.test_statistics_cache app.tests.views.test_statistics app.tests.test_statistics_performance api.tests.test_statistics --parallel 1`:
+  110 tests passed, clean exit (120.760 seconds).
+- Home module: 28 tests passed; regression demonstrated failure before the fix.
+- Anime outage regression: reproduced HTTP 503 before the fix and HTTP 200
+  after it; mapped episode/pagination cases also passed in the fast suite.
+- `uv run --no-sync ruff check src`: clean. `git diff --check`: clean.
+- One overlapping targeted run passed its assertions but collided with the full
+  run's temporary SQLite files during teardown. The standalone rerun above
+  resolved that runner collision; no application workaround was added.
+- No live-provider tests, browser timing measurements, deployment, or migrations
+  were performed. Runtime speedup percentages and universal banner removal are
+  not claimed.

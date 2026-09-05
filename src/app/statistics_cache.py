@@ -896,6 +896,8 @@ def get_top_talent_data(user, start_date, end_date, range_name=None):
     if range_name in PREDEFINED_RANGES:
         cache_entry = cache.get(_cache_key(user.id, range_name))
         if isinstance(cache_entry, dict):
+            if is_statistics_cache_stale(cache_entry, user.id):
+                schedule_statistics_refresh(user.id, range_name, allow_inline=False)
             data = cache_entry.get("data") or {}
             top_talent = data.get("top_talent")
             if (
@@ -913,6 +915,8 @@ def get_statistics_media_count(user, start_date, end_date, range_name=None):
     if range_name in PREDEFINED_RANGES:
         cache_entry = cache.get(_cache_key(user.id, range_name))
         if isinstance(cache_entry, dict):
+            if is_statistics_cache_stale(cache_entry, user.id):
+                schedule_statistics_refresh(user.id, range_name, allow_inline=False)
             data = cache_entry.get("data") or {}
             media_count = data.get("media_count")
             if isinstance(media_count, dict):
@@ -1040,6 +1044,8 @@ def get_statistics_minutes_by_type(user, start_date, end_date, range_name=None):
     if range_name in PREDEFINED_RANGES:
         cache_entry = cache.get(_cache_key(user.id, range_name))
         if isinstance(cache_entry, dict):
+            if is_statistics_cache_stale(cache_entry, user.id):
+                schedule_statistics_refresh(user.id, range_name, allow_inline=False)
             data = cache_entry.get("data") or {}
             minutes_per_type = data.get("minutes_per_media_type")
             if isinstance(minutes_per_type, dict):

@@ -235,6 +235,23 @@ class StatisticsStaleResultTests(TestCase):
         self.assertEqual(result, self.data)
         enqueue.assert_not_called()
 
+    @patch("app.tasks.refresh_statistics_cache_task.apply_async")
+    def test_lightweight_statistics_reads_refresh_retained_stale_results(self, enqueue):
+        for reader, key in (
+            (statistics_cache.get_statistics_minutes_by_type, "minutes_per_media_type"),
+            (statistics_cache.get_statistics_media_count, "media_count"),
+            (statistics_cache.get_top_talent_data, "top_talent"),
+        ):
+            with self.subTest(reader=reader.__name__):
+                cache.delete(
+                    statistics_cache._refresh_lock_key(self.user.id, "This Month")
+                )
+                enqueue.reset_mock()
+                statistics_cache.invalidate_statistics_cache(self.user.id)
+                result = reader(self.user, None, None, "This Month")
+                self.assertEqual(result, self.data[key])
+                enqueue.assert_called_once()
+
     def test_page_snapshot_survives_between_daily_visits(self):
         ttl = cache.ttl(statistics_cache._cache_key(self.user.id, "This Month"))
         self.assertGreater(ttl, 24 * 60 * 60)
