@@ -56,6 +56,24 @@ is intended to be reviewable and usable independently; nothing is merged or depl
   ranges. Redis eviction/flush and a never-built range remain genuine cold starts.
   No new database persistence or background schedule is introduced.
 
+## Keep anime details usable during preview-provider outages
+
+- Problem: a mapped provider timeout returned HTTP 503 for the whole secondary
+  detail panel even when the anime's primary metadata was available.
+- Cause: optional flat-anime episode preview errors escaped the detail view.
+- Change: catch provider API errors at that optional boundary and render the
+  available details plus the existing unavailable-episode explanation.
+  Programming and database errors are not swallowed.
+- Evidence: baseline returned 503 in the new outage regression; fixed path
+  returns 200. The synopsis belongs to the main header, so the secondary-panel
+  regression checks the Details section and episode fallback instead.
+- Alternative: changing the main provider error handler would hide failures in
+  required metadata; the exception handling belongs at the optional operation.
+- Validation: mapped episodes, pagination, and flat/grouped anime tests were
+  exercised alongside the outage case. Final results recorded below.
+- Limit: this gracefully handles a provider failure after it occurs; it does
+  not shorten the provider timeout or eliminate every detail-page network call.
+
 ## Review coverage and follow-ups
 
 The review follows Django request views, shared media helpers, Redis range/day
