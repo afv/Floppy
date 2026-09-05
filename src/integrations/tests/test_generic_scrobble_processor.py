@@ -3,7 +3,17 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import TestCase, tag
 
-from app.models import TV, Episode, Item, MediaTypes, Movie, Season, Sources, Status
+from app.models import (
+    TV,
+    Anime,
+    Episode,
+    Item,
+    MediaTypes,
+    Movie,
+    Season,
+    Sources,
+    Status,
+)
 from integrations.webhooks.generic_scrobble import GenericScrobbleProcessor
 
 
@@ -35,8 +45,20 @@ class GenericScrobbleHeuristicTests(TestCase):
         )
         self.assertEqual(
             ids,
-            {"tmdb_id": "603", "imdb_id": "tt0133093", "tvdb_id": None},
+            {
+                "tmdb_id": "603",
+                "imdb_id": "tt0133093",
+                "tvdb_id": None,
+                "anidb_id": None,
+            },
         )
+
+    def test_extract_external_ids_reads_anidb(self):
+        """An anidb id is carried through for the anime routing path."""
+        ids = self.processor._extract_external_ids(
+            {"ids": {"tvdb": "9350138", "anidb": "3651"}},
+        )
+        self.assertEqual(ids["anidb_id"], "3651")
 
     def test_is_played_honors_explicit_completed_override(self):
         """An explicit 'completed' flag overrides the position/duration heuristic."""
@@ -207,6 +229,49 @@ class GenericScrobbleProcessPayloadTests(TestCase):
                 item__episode_number=1,
             ).exists(),
         )
+
+    def test_episode_stop_with_anidb_id_tracks_the_mapped_mal_cour(self):
+        """An anidb id resolves the exact MAL entry without a TMDB round-trip."""
+        self.user.anime_enabled = True
+        self.user.save()
+
+        with (
+            patch(
+                "integrations.webhooks.anime_mappings.fetch_mapping_data",
+                return_value={"anidb:3651:R": {"mal:849": {"1-": "1-"}}},
+            ),
+            patch(
+                "app.providers.mal.anime",
+                return_value={
+                    "title": "Suzumiya Haruhi no Yuutsu",
+                    "image": "",
+                    "max_progress": 14,
+                },
+            ),
+            patch("app.services.metadata_resolution.upsert_provider_links"),
+            patch(
+                "integrations.webhooks.anime_mappings.find_entries_for_mal_id",
+                return_value=[],
+            ),
+        ):
+            self.processor.process_payload(
+                {
+                    "media_type": "episode",
+                    "ids": {"tvdb": "9350138", "anidb": "3651"},
+                    "series_title": "Suzumiya Haruhi no Yuutsu",
+                    "season_number": 1,
+                    "episode_number": 1,
+                    "completed": True,
+                },
+                self.user,
+            )
+
+        anime = Anime.objects.get(item__media_id="849", user=self.user)
+        self.assertEqual(anime.item.source, Sources.MAL.value)
+        self.assertEqual(anime.status, Status.IN_PROGRESS.value)
+        self.assertEqual(anime.progress, 1)
+        # The MAL route is terminal: no parallel TV row is opened for the show.
+        self.assertFalse(TV.objects.filter(user=self.user).exists())
 
     def test_movie_resolution_failure_propagates(self):
         """A provider failure during resolution is not swallowed here."""
