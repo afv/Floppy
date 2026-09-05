@@ -1505,6 +1505,37 @@ def media_list(request, media_type):
     # so cache only the database-backed sort orders.
     _use_media_list_cache = not _time_left_active and sort_filter != "platform"
     _include_untracked_entries = MEDIA_LIST_NO_STATUS in status_filter
+
+    def _resolve_tag_count_source_items(filter_data_source_items, tracked_item_ids):
+        """Item list for tag counts: same filters as the list, minus the tag filter.
+
+        Without this, tag counts are computed from the already tag-filtered
+        list, so every tag not part of the active filter collapses to 0
+        (issue #1072).
+        """
+        if tag_included_ids is None and tag_excluded_ids is None:
+            return filter_data_source_items
+        tag_free_filters = {
+            **list_sql_filters,
+            "tag_included_ids": None,
+            "tag_excluded_ids": None,
+        }
+        items = [
+            MediaListEntry.from_media(media)
+            for media in BasicMedia.objects.get_media_list(
+                user=request.user,
+                media_type=media_type,
+                status_filter=tracked_status_filter,
+                sort_filter=query_sort_filter,
+                search=search_query,
+                direction=direction,
+                list_sql_filters=tag_free_filters,
+            )
+        ]
+        if _include_untracked_entries:
+            items.extend(_build_untracked_media_entries(tracked_item_ids))
+        return apply_latest_status_filter(items, status_filter)
+
     _status_cache_key = ",".join(sorted(status_filter))
     _tag_cache_key = ",".join(sorted(tag_values))
     _platform_cache_key = ",".join(sorted(platform_values))
@@ -1830,7 +1861,9 @@ def media_list(request, media_type):
             filter_data.update(
                 _build_media_list_tag_data(
                     request.user,
-                    filter_data_source_items,
+                    _resolve_tag_count_source_items(
+                        filter_data_source_items, tracked_item_ids
+                    ),
                 ),
             )
             if _media_list_filter_cache_key:
@@ -2084,7 +2117,9 @@ def media_list(request, media_type):
         filter_data.update(
             _build_media_list_tag_data(
                 request.user,
-                filter_data_source_items,
+                _resolve_tag_count_source_items(
+                    filter_data_source_items, tracked_item_ids
+                ),
             ),
         )
         if _media_list_filter_cache_key:
